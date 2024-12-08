@@ -58,7 +58,7 @@ func (p *Peer) RemoveFromServer(serverAddr string) error {
 	return nil
 }
 
-func (p *Peer) GetPeersFromServer(serverAddr string) (map[string]string, error) {
+func (p *Peer) GetPeersFromServer(serverAddr string) (map[string]Peer, error) {
 	resp, err := http.Get(fmt.Sprintf("http://%s/get-peers", serverAddr))
 	if err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func (p *Peer) GetPeersFromServer(serverAddr string) (map[string]string, error) 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get peers: %s", resp.Status)
 	}
-	var peers map[string]string
+	var peers map[string]Peer
 	if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
 		return nil, err
 	}
