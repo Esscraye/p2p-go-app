@@ -2,6 +2,8 @@ package peer
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,14 +11,101 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+)
+
+const (
+	partSize   = 1 * 1024 * 1024 // 1Mo
+	storageDir = "file_parts"    // directory to store file part
 )
 
 type Peer struct {
-	Addr string
+	Addr      string            `json:"addr"`
+	FileParts map[string]string `json:"file_parts"`
 }
 
 func NewPeer(addr string) *Peer {
 	return &Peer{Addr: addr}
+}
+
+// SplitFileIntoParts divise un fichier en parties et les stocke dans le dossier de stockage.
+func (p *Peer) SplitFileIntoParts(filePath string) (map[string]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	fileSize := fileInfo.Size()
+	fileHash := sha256.New()
+	if _, err := io.Copy(fileHash, file); err != nil {
+		return nil, err
+	}
+	fileHashStr := hex.EncodeToString(fileHash.Sum(nil))
+
+	parts := make(map[string]string)
+	for start := int64(0); start < fileSize; start += partSize {
+		end := start + partSize
+		if end > fileSize {
+			end = fileSize
+		}
+		partFileName := fmt.Sprintf("%s_%d", fileHashStr, len(parts))
+		partFilePath := filepath.Join(storageDir, partFileName)
+
+		partFile, err := os.Create(partFilePath)
+		if err != nil {
+			return nil, err
+		}
+		defer partFile.Close()
+
+		if _, err := file.Seek(start, io.SeekStart); err != nil {
+			return nil, err
+		}
+		if _, err := io.CopyN(partFile, file, end-start); err != nil {
+			return nil, err
+		}
+
+		partHash := sha256.New()
+		if _, err := io.Copy(partHash, partFile); err != nil {
+			return nil, err
+		}
+		partHashStr := hex.EncodeToString(partHash.Sum(nil))
+		parts[partFileName] = partHashStr
+	}
+
+	return parts, nil
+}
+
+// CombineFileParts combine les parties de fichiers en un fichier complet.
+func (p *Peer) CombineFileParts(fileHashStr string, outputFilePath string) error {
+	outputFile, err := os.Create(outputFilePath)
+	if err != nil {
+		return err
+	}
+	defer outputFile.Close()
+
+	for i := 0; ; i++ {
+		partFileName := fmt.Sprintf("%s_%d", fileHashStr, i)
+		partFilePath := filepath.Join(storageDir, partFileName)
+		partFile, err := os.Open(partFilePath)
+		if os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return err
+		}
+		defer partFile.Close()
+
+		if _, err := io.Copy(outputFile, partFile); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (p *Peer) RegisterWithServer(serverAddr string) error {
@@ -94,11 +183,7 @@ func (p *Peer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dirPath := p.Addr + "_files"
-	if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
-		http.Error(w, "Error creating directory", http.StatusInternalServerError)
-		return
-	}
+	dirPath := filepath.Join(p.Addr+"_files", "file_parts")
 	filePath := filepath.Join(dirPath, r.FormValue("filename"))
 	newFile, err := os.Create(filePath)
 	if err != nil {
@@ -203,5 +288,96 @@ func (p *Peer) DownloadFile(filename, sourceAddr string) error {
 	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
-	return err
+	if err != nil {
+		return err
+	}
+
+	//TODO: Update the server with the new file part
+	return nil
+}
+
+// Ajoutez une méthode pour interroger le serveur pour obtenir les peers qui possèdent certaines parties de fichiers :
+func (p *Peer) QueryFilePartsFromServer(serverAddr, fileName string) (map[string]string, error) {
+	data := map[string]string{
+		"file_name": fileName,
+		"addr":      p.Addr,
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.Post(fmt.Sprintf("http://%s/query-file-parts", serverAddr), "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to query file parts: %s", resp.Status)
+	}
+	var response map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// ScanStorageDir scanne le dossier de stockage et récupère les informations sur les fichiers et leurs parties.
+func (p *Peer) ScanStorageDir() (map[string]string, error) {
+	files := make(map[string]string)
+
+	err := filepath.Walk("file_parts", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			fileName := info.Name()
+			parts := strings.Split(fileName, "_")
+			if len(parts) == 2 {
+				fileHash := parts[0]
+				partIndex := parts[1]
+
+				partFile, err := os.Open(path)
+				if err != nil {
+					return err
+				}
+				defer partFile.Close()
+
+				partHash := sha256.New()
+				if _, err := io.Copy(partHash, partFile); err != nil {
+					return err
+				}
+				partHashStr := hex.EncodeToString(partHash.Sum(nil))
+
+				// Ajouter toutes les parties du fichier
+				files[fileHash+"_"+partIndex] = partHashStr
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return files, nil
+}
+
+func (p *Peer) UpdateFilePartsOnServer(serverAddr string, fileParts map[string]string) error {
+	data := Peer{
+		Addr:      p.Addr,
+		FileParts: fileParts,
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(fmt.Sprintf("http://%s/update-peer-file-parts", serverAddr), "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to update file parts: %s", resp.Status)
+	}
+	return nil
 }

@@ -28,6 +28,9 @@ go.work.sum
 # env file
 .env
 logs/
+peer_directory/complete_files/*
+peer_directory/file_parts/*
+file_parts/*
 
 # macOS
 .DS_Store

@@ -122,13 +122,16 @@ func (s *Server) UpdatePeerFileParts(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	log.Printf("Updating file parts for peer: %s", peer.Addr)
 	for fileName, filePart := range peer.FileParts {
+		log.Printf("Processing file: %s, part: %s", fileName, filePart)
 		if s.files[fileName] == nil {
 			s.files[fileName] = make(map[string]string)
 		}
 		s.files[fileName][peer.Addr] = filePart
 	}
 	w.WriteHeader(http.StatusOK)
+	log.Printf("Successfully updated file parts for peer: %s", peer.Addr)
 }
 
 func (s *Server) QueryFileParts(w http.ResponseWriter, r *http.Request) {
@@ -144,8 +147,15 @@ func (s *Server) QueryFileParts(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	peersWithFileParts := s.files[request.FileName]
+	log.Printf("Processing file: %s", request.FileName)
+	if peersWithFileParts == nil {
+		log.Printf("No file parts found for file: %s", request.FileName)
+		json.NewEncoder(w).Encode(make(map[string]string))
+		return
+	}
 	response := make(map[string]string)
 	for peerAddr, filePart := range peersWithFileParts {
+		log.Printf("Peer %s has file part %s", peerAddr, filePart)
 		if peerAddr != request.Addr {
 			response[peerAddr] = filePart
 		}

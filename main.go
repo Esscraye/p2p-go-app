@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+const serverIp = "localhost" //"145.223.79.38"
+const serverPort = "8080"
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: go run main.go <port>")
@@ -33,7 +36,7 @@ func main() {
 
 	go p.StartServer()
 
-	if err := p.RegisterWithServer("localhost:8080"); err != nil {
+	if err := p.RegisterWithServer(serverIp + ":" + serverPort); err != nil {
 		fmt.Println("Error registering peer:", err)
 		return
 	}
@@ -46,7 +49,11 @@ func main() {
 		fmt.Println("(1) -- Get Peers")
 		fmt.Println("(2) -- Upload File")
 		fmt.Println("(3) -- Download File")
-		fmt.Println("(4) -- Exit")
+		fmt.Println("(4) -- Update File Parts")
+		fmt.Println("(5) -- Query File Parts")
+		fmt.Println("(6) -- Exit")
+		fmt.Println("(7) -- Split File Into Parts")
+		fmt.Println("(8) -- Combine File Parts")
 		fmt.Println()
 
 		var choice int
@@ -56,7 +63,7 @@ func main() {
 
 		switch choice {
 		case 1:
-			peers, err := p.GetPeersFromServer("localhost:8080")
+			peers, err := p.GetPeersFromServer(serverIp + ":" + serverPort)
 			if err != nil {
 				fmt.Println("Error getting peers:", err)
 			} else {
@@ -92,11 +99,47 @@ func main() {
 				fmt.Printf("Successfully downloaded file from peer %s\n", sourceAddr)
 			}
 		case 4:
+			// Scanner le dossier de stockage pour récupérer les informations sur les fichiers et leurs parties
+			fileParts, err := p.ScanStorageDir()
+			if err != nil {
+				fmt.Println("Error scanning storage directory:", err)
+				return
+			}
+			fmt.Println("File parts:", fileParts)
+
+			// Informer le serveur des parties de fichiers que le peer possède
+			if err := p.UpdateFilePartsOnServer(serverIp+":"+serverPort, fileParts); err != nil {
+				fmt.Println("Error updating file parts on server:", err)
+				return
+			}
+			fmt.Println("Successfully updated file parts on server")
+		case 5:
+			fileName := "d7061c7b0c63301f41d30cfb1aad4ba191f9d828981e4bd9ec8744f44a8eb57a_0"
+			fileParts, err := p.QueryFilePartsFromServer(serverIp+":"+serverPort, fileName)
+			if err != nil {
+				fmt.Println("Error querying file parts:", err)
+				return
+			}
+			fmt.Println("File parts:", fileParts)
+		case 6:
 			fmt.Println("Exiting...")
-			if err := p.RemoveFromServer("localhost:8080"); err != nil {
+			if err := p.RemoveFromServer(serverIp + ":" + serverPort); err != nil {
 				fmt.Println("Error removing peer:", err)
 			}
 			return
+		case 7:
+			parts, err := p.SplitFileIntoParts("./peer_directory/complete_files/test.txt")
+			if err != nil {
+				fmt.Println("Error splitting file into parts:", err)
+				return
+			}
+			fmt.Println("File parts:", parts)
+		case 8:
+			if err := p.CombineFileParts("d7061c7b0c63301f41d30cfb1aad4ba191f9d828981e4bd9ec8744f44a8eb57a", "peer_directory/complete_files/file.txt"); err != nil {
+				fmt.Println("Error combining file parts:", err)
+				return
+			}
+			fmt.Println("File combined successfully")
 		default:
 			fmt.Println("Invalid choice")
 		}
