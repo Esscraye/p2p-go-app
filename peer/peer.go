@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
+	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const (
@@ -21,11 +23,19 @@ const (
 
 type Peer struct {
 	Addr      string            `json:"addr"`
+	PublicIP  string            `json:"public_ip"`
 	FileParts map[string]string `json:"file_parts"`
 }
 
 func NewPeer(addr string) *Peer {
-	return &Peer{Addr: addr}
+	publicIP, err := getPublicIP()
+	if err != nil {
+		log.Printf("Error getting public IP: %s", err)
+	}
+	return &Peer{
+		Addr:     addr,
+		PublicIP: publicIP,
+	}
 }
 
 // SplitFileIntoParts divise un fichier en parties et les stocke dans le dossier de stockage.
@@ -109,7 +119,7 @@ func (p *Peer) CombineFileParts(fileHashStr string, outputFilePath string) error
 }
 
 func (p *Peer) RegisterWithServer(serverAddr string) error {
-	data := map[string]string{"addr": p.Addr}
+	data := map[string]string{"addr": p.Addr, "public_ip": p.PublicIP}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -123,6 +133,19 @@ func (p *Peer) RegisterWithServer(serverAddr string) error {
 		return fmt.Errorf("failed to register peer: %s", resp.Status)
 	}
 	return nil
+}
+
+func getPublicIP() (string, error) {
+	resp, err := http.Get("https://api.ipify.org?format=json")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var result map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	return result["ip"], nil
 }
 
 func (p *Peer) RemoveFromServer(serverAddr string) error {
@@ -164,46 +187,22 @@ func (p *Peer) GetPeersFromServer(serverAddr string) (map[string]Peer, error) {
 }
 
 func (p *Peer) StartServer() {
-	http.HandleFunc("/upload", p.handleUpload)
 	http.HandleFunc("/download", p.handleDownload)
-	http.ListenAndServe(p.Addr, nil)
-}
-
-func (p *Peer) handleUpload(w http.ResponseWriter, r *http.Request) {
-	file, _, err := r.FormFile("file")
-	if err != nil {
-		http.Error(w, "Error retrieving the file", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	fileBytes, err := io.ReadAll(file)
-	if err != nil {
-		http.Error(w, "Error reading the file", http.StatusInternalServerError)
-		return
-	}
-
-	dirPath := filepath.Join(p.Addr+"_files", "file_parts")
-	filePath := filepath.Join(dirPath, r.FormValue("filename"))
-	newFile, err := os.Create(filePath)
-	if err != nil {
-		http.Error(w, "Error creating the file", http.StatusInternalServerError)
-		return
-	}
-	defer newFile.Close()
-
-	if _, err := newFile.Write(fileBytes); err != nil {
-		http.Error(w, "Error writing the file", http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
+	http.ListenAndServe(":"+p.Addr, nil)
 }
 
 func (p *Peer) handleDownload(w http.ResponseWriter, r *http.Request) {
 	filename := r.URL.Query().Get("filename")
-	dirPath := p.Addr + "_files"
+	if filename == "" {
+		http.Error(w, "Filename is required", http.StatusBadRequest)
+		return
+	}
+
+	dirPath := filepath.Join("file_parts")
 	filePath := filepath.Join(dirPath, filename)
+
+	log.Printf("Trying to open file: %s", filePath)
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		http.Error(w, "File not found", http.StatusNotFound)
@@ -214,69 +213,24 @@ func (p *Peer) handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeFile(w, r, filePath)
+
+	log.Printf("File sent: %s", filePath)
 }
 
-func (p *Peer) UploadFile(filePath, targetAddr string) error {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
-	if err != nil {
-		return err
-	}
-
-	_, err = io.Copy(part, file)
-	if err != nil {
-		return err
-	}
-	writer.WriteField("filename", filepath.Base(filePath))
-	writer.Close()
-
-	req, err := http.NewRequest("POST", fmt.Sprintf("http://%s/upload", targetAddr), body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %v", err)
-	}
-	fmt.Println("bodyBytes: ", bodyBytes)
-	bodyString := string(bodyBytes)
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to upload file: %s, response: %s", resp.Status, bodyString)
-	}
-
-	return nil
-}
-
-func (p *Peer) DownloadFile(filename, sourceAddr string) error {
-	resp, err := http.Get(fmt.Sprintf("http://%s/download?filename=%s", sourceAddr, filename))
+func (p *Peer) DownloadFilePart(filename, sourceIP, sourceAddr string) error {
+	resp, err := http.Get(fmt.Sprintf("http://%s:%s/download?filename=%s", sourceIP, sourceAddr, filename))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	log.Printf("Downloading file part: %s from %s:%s", filename, sourceIP, sourceAddr)
+	log.Printf("Response status: %s", resp.Status)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to download file: %s", resp.Status)
 	}
 
-	dirPath := p.Addr + "_files"
+	dirPath := filepath.Join("downloads")
 	if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
@@ -292,7 +246,73 @@ func (p *Peer) DownloadFile(filename, sourceAddr string) error {
 		return err
 	}
 
-	//TODO: Update the server with the new file part
+	return nil
+}
+
+func (p *Peer) DownloadFile(filename string, nbParts int, serverAddr string) error {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+
+	for i := 0; i < nbParts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			partFileName := fmt.Sprintf("%s_%d", filename, i)
+			fileParts, err := p.QueryFilePartsFromServer(serverAddr, partFileName)
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("failed to query file parts for %s: %v", partFileName, err))
+				mu.Unlock()
+				return
+			}
+
+			if len(fileParts) == 0 {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("no peers found for file part: %s", partFileName))
+				mu.Unlock()
+				return
+			}
+
+			// Sélectionner un pair au hasard
+			keys := make([]string, 0, len(fileParts))
+			for key := range fileParts {
+				keys = append(keys, key)
+			}
+			randomKey := keys[rand.Intn(len(keys))]
+			parts := strings.Split(randomKey, ":")
+			if len(parts) != 2 {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("invalid peer address format: %s", randomKey))
+				mu.Unlock()
+				return
+			}
+			ip, port := parts[0], parts[1]
+
+			ip = "localhost" // TODO: make open port and remove this line in production
+
+			// Télécharger la partie de fichier
+			if err := p.DownloadFilePart(partFileName, ip, port); err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("failed to download file part %s from %s:%s: %v", partFileName, ip, port, err))
+				mu.Unlock()
+				return
+			}
+
+			log.Printf("Successfully downloaded file part: %s from %s:%s", partFileName, ip, port)
+		}(i)
+	}
+
+	wg.Wait()
+
+	if len(errs) > 0 {
+		for _, err := range errs {
+			fmt.Println(err)
+		}
+		return fmt.Errorf("failed to download some file parts")
+	}
+
+	//TODO: update file parts on server
 	return nil
 }
 
@@ -300,7 +320,7 @@ func (p *Peer) DownloadFile(filename, sourceAddr string) error {
 func (p *Peer) QueryFilePartsFromServer(serverAddr, fileName string) (map[string]string, error) {
 	data := map[string]string{
 		"file_name": fileName,
-		"addr":      p.Addr,
+		"addr_ip":   p.PublicIP + ":" + p.Addr,
 	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -362,9 +382,12 @@ func (p *Peer) ScanStorageDir() (map[string]string, error) {
 	return files, nil
 }
 
-func (p *Peer) UpdateFilePartsOnServer(serverAddr string, fileParts map[string]string) error {
+func (p *Peer) UpdateFilePartsOnServer(serverAddr string) error {
+	fileParts, err := p.ScanStorageDir()
+
 	data := Peer{
 		Addr:      p.Addr,
+		PublicIP:  p.PublicIP,
 		FileParts: fileParts,
 	}
 	jsonData, err := json.Marshal(data)

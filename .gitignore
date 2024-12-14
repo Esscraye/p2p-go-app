@@ -31,6 +31,7 @@ logs/
 peer_directory/complete_files/*
 peer_directory/file_parts/*
 file_parts/*
+downloads/*
 
 # macOS
 .DS_Store

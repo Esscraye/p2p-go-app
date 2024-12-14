@@ -31,6 +31,7 @@ func init() {
 
 type Peer struct {
 	Addr      string            `json:"addr"`
+	PublicIP  string            `json:"public_ip"`
 	FileParts map[string]string `json:"file_parts"` // map[filename]fil_part
 	LastCheck time.Time         `json:"last_check"`
 }
@@ -50,8 +51,8 @@ func NewServer() *Server {
 
 func (s *Server) RegisterPeer(w http.ResponseWriter, r *http.Request) {
 	var peer struct {
-		Addr      string            `json:"addr"`
-		FileParts map[string]string `json:"file_parts"`
+		Addr     string `json:"addr"`
+		PublicIP string `json:"public_ip"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&peer); err != nil {
 		log.Printf("Error registering peer: %s", err)
@@ -60,15 +61,8 @@ func (s *Server) RegisterPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.peers[peer.Addr] = Peer{Addr: peer.Addr, LastCheck: time.Now()}
-	log.Printf("Peer registered: %s", peer.Addr)
-
-	for fileName, filePart := range peer.FileParts {
-		if s.files[fileName] == nil {
-			s.files[fileName] = make(map[string]string)
-		}
-		s.files[fileName][peer.Addr] = filePart
-	}
+	s.peers[peer.PublicIP+":"+peer.Addr] = Peer{Addr: peer.Addr, PublicIP: peer.PublicIP, LastCheck: time.Now(), FileParts: make(map[string]string)}
+	log.Printf("Peer registered: %s:%s", peer.PublicIP, peer.Addr)
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -100,7 +94,6 @@ func (s *Server) GetPeers(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	s.checkPeerStatus()
 	json.NewEncoder(w).Encode(s.peers)
-	json.NewEncoder(w).Encode(s.files)
 	log.Println("Peers list requested")
 }
 
@@ -122,16 +115,16 @@ func (s *Server) UpdatePeerFileParts(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	log.Printf("Updating file parts for peer: %s", peer.Addr)
+	log.Printf("Updating file parts for peer: %s:%s", peer.PublicIP, peer.Addr)
 	for fileName, filePart := range peer.FileParts {
 		log.Printf("Processing file: %s, part: %s", fileName, filePart)
 		if s.files[fileName] == nil {
 			s.files[fileName] = make(map[string]string)
 		}
-		s.files[fileName][peer.Addr] = filePart
+		s.files[fileName][peer.PublicIP+":"+peer.Addr] = filePart
 	}
 	w.WriteHeader(http.StatusOK)
-	log.Printf("Successfully updated file parts for peer: %s", peer.Addr)
+	log.Printf("Successfully updated file parts for peer: %s:%s", peer.PublicIP, peer.Addr)
 }
 
 func (s *Server) QueryFileParts(w http.ResponseWriter, r *http.Request) {

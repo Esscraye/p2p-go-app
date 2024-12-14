@@ -28,7 +28,7 @@ func main() {
 		return
 	}
 	if portNum > 1024 && portNum < 65535 {
-		p = peer.NewPeer(":" + port)
+		p = peer.NewPeer(port)
 	} else {
 		fmt.Println("Invalid port number. Port number should be between 1024 and 65535")
 		return
@@ -47,7 +47,7 @@ func main() {
 		fmt.Println()
 		fmt.Println("Enter a number for a command : ")
 		fmt.Println("(1) -- Get Peers")
-		fmt.Println("(2) -- Upload File")
+		fmt.Println("(2) -- Download File Part")
 		fmt.Println("(3) -- Download File")
 		fmt.Println("(4) -- Update File Parts")
 		fmt.Println("(5) -- Query File Parts")
@@ -70,45 +70,34 @@ func main() {
 				fmt.Println("Peers:")
 				fmt.Println("~~~~~~")
 				i := 1
-				for _, addr := range peers {
-					fmt.Printf("(%d) <%s>\n", i, addr)
+				for _, peer := range peers {
+					fmt.Printf("(%d) <%s:%s>\n", i, peer.PublicIP, peer.Addr)
 					i++
 				}
 				fmt.Println("~~~~~~")
 			}
 		case 2:
-			var filePath, targetAddr string
-			fmt.Println("Enter file path:")
-			fmt.Scan(&filePath)
-			fmt.Println("Enter target peer address:")
-			fmt.Scan(&targetAddr)
-			if err := p.UploadFile(filePath, ":"+targetAddr); err != nil {
-				fmt.Println("Error uploading file:", err)
-			} else {
-				fmt.Printf("Successfully uploaded file to peer %s\n", targetAddr)
-			}
-		case 3:
-			var filename, sourceAddr string
-			fmt.Println("Enter filename:")
-			fmt.Scan(&filename)
-			fmt.Println("Enter source peer address:")
-			fmt.Scan(&sourceAddr)
-			if err := p.DownloadFile(filename, ":"+sourceAddr); err != nil {
-				fmt.Println("Error downloading file:", err)
-			} else {
-				fmt.Printf("Successfully downloaded file from peer %s\n", sourceAddr)
-			}
-		case 4:
-			// Scanner le dossier de stockage pour récupérer les informations sur les fichiers et leurs parties
-			fileParts, err := p.ScanStorageDir()
+			fileName := "d7061c7b0c63301f41d30cfb1aad4ba191f9d828981e4bd9ec8744f44a8eb57a_0"
+			err := p.DownloadFilePart(fileName, "localhost", "4000")
 			if err != nil {
-				fmt.Println("Error scanning storage directory:", err)
+				fmt.Println("Error downloading file part:", err)
 				return
 			}
-			fmt.Println("File parts:", fileParts)
-
+		case 3:
+			var filename string
+			var nbParts int
+			fmt.Println("Enter filename:")
+			fmt.Scan(&filename)
+			fmt.Println("Enter number of parts:")
+			fmt.Scan(&nbParts)
+			if err := p.DownloadFile(filename, nbParts, serverIp+":"+serverPort); err != nil {
+				fmt.Println("Error downloading file:", err)
+			} else {
+				fmt.Printf("Successfully downloaded file")
+			}
+		case 4:
 			// Informer le serveur des parties de fichiers que le peer possède
-			if err := p.UpdateFilePartsOnServer(serverIp+":"+serverPort, fileParts); err != nil {
+			if err := p.UpdateFilePartsOnServer(serverIp + ":" + serverPort); err != nil {
 				fmt.Println("Error updating file parts on server:", err)
 				return
 			}
