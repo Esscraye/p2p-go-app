@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const serverIp = "localhost" //"145.223.79.38"
+const serverIp = "localhost" //"145.223.79.38" pour l'ip du server
 const serverPort = "8080"
 
 func main() {
